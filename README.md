@@ -1,2 +1,2 @@
-# wiremocktest
+# wiretest
 wiremock test
