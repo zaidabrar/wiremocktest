@@ -1,93 +1,160 @@
 package org.example;
 
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.node.ArrayNode;
-import com.fasterxml.jackson.databind.node.ObjectNode;
+import org.w3c.dom.*;
 
-import java.io.File;
-import java.io.FileWriter;
-import java.io.IOException;
+import javax.json.*;
+import javax.xml.parsers.*;
+import java.io.*;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 public class CharlesChlsToWireMock {
+    public static void main(String[] args) throws Exception {
+        // Load and parse the XML file
+        File xmlFile = new File("src/main/resources/xcUntitled.chlsx"); // Update with the correct path
+        DocumentBuilderFactory dbFactory = DocumentBuilderFactory.newInstance();
+        DocumentBuilder dBuilder = dbFactory.newDocumentBuilder();
+        Document doc = dBuilder.parse(xmlFile);
+        doc.getDocumentElement().normalize();
 
-    public static void main(String[] args) {
-        ObjectMapper mapper = new ObjectMapper();
-        File chlsjFile = new File("src/main/resources/ebilljsonsession.chlsj"); // Update with the correct path to your .chlsj file
+        // Get the transaction node
+        NodeList transactionList = doc.getElementsByTagName("transaction");
 
-        try {
-            // Load and parse the .chlsj file (Charles JSON file)
-            JsonNode charlesData = mapper.readTree(chlsjFile);
-            ArrayNode wiremockStubs = mapper.createArrayNode(); // To hold multiple stubs
+        List<JsonObjectBuilder> stubs = new ArrayList<>();
 
-            // Process each entry in the .chlsj log file
-            for (JsonNode entry : charlesData) {
-                // Prepare the root object for the JSON stub
-                ObjectNode wiremockStub = mapper.createObjectNode();
-                ObjectNode requestNode = mapper.createObjectNode();
-                ObjectNode responseNode = mapper.createObjectNode();
+        for (int i = 0; i < transactionList.getLength(); i++) {
+            Element transaction = (Element) transactionList.item(i);
 
-                // Extract request data
-                JsonNode request = entry.get("request");
-                if (request != null) {
-                    String method = request.path("method").asText();
-                    String url = request.path("path").asText();
+            // Get request details
+            String method = transaction.getAttribute("method");
+            String path = transaction.getAttribute("path");
+            String requestBody = getRequestBody(transaction);
+            JsonArrayBuilder bodyPatterns = Json.createArrayBuilder();
 
-                    // Set up request
-                    requestNode.put("method", method);
-                    requestNode.put("urlPath", url);
-
-                    // Set up bodyPatterns if there is a body
-                    JsonNode requestBody = request.path("body");
-                    if (requestBody != null && requestBody.has("text")) {
-                        String bodyText = requestBody.path("text").asText();
-                        ObjectNode bodyPatternsNode = mapper.createObjectNode();
-                        bodyPatternsNode.put("matchesJsonPath", "$[?(@.clienttype_id == " + bodyText + ")]");
-                        requestNode.putArray("bodyPatterns").add(bodyPatternsNode);
-                    }
-                }
-
-                // Extract response data
-                JsonNode response = entry.get("response");
-                if (response != null) {
-                    int status = response.path("status").asInt();
-                    JsonNode responseBody = response.path("body");
-
-                    // Set up response
-                    responseNode.put("status", status);
-                    responseNode.put("statusText", response.path("header").path("headers").get(0).path("value").asText());
-
-                    // Add the response body
-                    if (responseBody != null && responseBody.has("text")) {
-                        responseNode.set("jsonBody", responseBody.path("text"));
-                    }
-
-                    // Set up response headers
-                    ObjectNode headersNode = mapper.createObjectNode();
-                    JsonNode responseHeaders = response.path("header").path("headers");
-                    if (responseHeaders != null) {
-                        for (JsonNode header : responseHeaders) {
-                            headersNode.put(header.path("name").asText(), header.path("value").asText());
-                        }
-                    }
-
-                    responseNode.set("headers", headersNode);
-                }
-
-                // Combine request and response into the stub
-                wiremockStub.set("request", requestNode);
-                wiremockStub.set("response", responseNode);
-                wiremockStubs.add(wiremockStub); // Add each stub to the array
+            // Extract JSON keys for request body matching
+            if (requestBody != null) {
+                // Dynamically generate body patterns from the request JSON
+                bodyPatterns.add(createJsonPathObject("$.clienttype_id"));
+                bodyPatterns.add(createJsonPathObject("$.dev_name"));
+                bodyPatterns.add(createJsonPathObject("$.device_id"));
+                bodyPatterns.add(createJsonPathObject("$.latitude"));
+                bodyPatterns.add(createJsonPathObject("$.longitude"));
+                bodyPatterns.add(createJsonPathObject("$.cd16"));
+                bodyPatterns.add(createJsonPathObject("$.os"));
+                bodyPatterns.add(createJsonPathObject("$.os_version"));
+                bodyPatterns.add(createJsonPathObject("$.platform_id"));
+                bodyPatterns.add(createJsonPathObject("$.release_id"));
+                bodyPatterns.add(createJsonPathObject("$.encrypted"));
+                bodyPatterns.add(createJsonPathObject("$.app_version"));
+                bodyPatterns.add(createJsonPathObject("$.sypi_version"));
+                bodyPatterns.add(createJsonPathObject("$.visit_id"));
+                bodyPatterns.add(createJsonPathObject("$.gps_syf_profileid"));
+                bodyPatterns.add(createJsonPathObject("$.ls"));
+                bodyPatterns.add(createJsonPathObject("$.state.tag"));
+                bodyPatterns.add(createJsonPathObject("$.state.gps_syf_profileid"));
+                bodyPatterns.add(createJsonPathObject("$.state.request_type"));
             }
 
-            // Output the JSON to a file
-            try (FileWriter file = new FileWriter("wiremock-stubs.json")) {
-                mapper.writerWithDefaultPrettyPrinter().writeValue(file, wiremockStubs);
-            }
+            // Get response details
+            JsonObjectBuilder responseBuilder = Json.createObjectBuilder();
+            responseBuilder.add("status", Integer.parseInt(transaction.getElementsByTagName("response").item(0).getAttributes().getNamedItem("status").getNodeValue()));
 
-            System.out.println("WireMock stubs generated as 'wiremock-stubs.json'");
-        } catch (IOException e) {
-            e.printStackTrace();
+            // Set response headers
+            JsonObjectBuilder headersBuilder = Json.createObjectBuilder();
+            Element responseElement = (Element) transaction.getElementsByTagName("response").item(0); // Cast the 'response' node to an Element
+
+            NodeList headers = responseElement.getElementsByTagName("header"); // Now use getElementsByTagName on the Element
+
+            for (int j = 0; j < headers.getLength(); j++) {
+                Node header = headers.item(j);
+                if (header.getNodeType() == Node.ELEMENT_NODE) {
+                    Element headerElement = (Element) header;
+                    String name = headerElement.getAttribute("name"); // Get header name from 'name' attribute
+                    String value = headerElement.getAttribute("value"); // Get header value from 'value' attribute
+
+                    if (name != null && !name.isEmpty()) {
+                        headersBuilder.add(name, value); // Only add if the name is valid
+                    }
+                }
+            }
+            responseBuilder.add("headers", headersBuilder);
+
+
+            // Set response body
+            String responseBody = getResponseBody(transaction);
+            JsonObjectBuilder jsonBodyBuilder = extractBodyFromResponse(responseBody);
+
+            responseBuilder.add("jsonBody", jsonBodyBuilder);
+
+            // Construct the final WireMock stub
+            JsonObjectBuilder stubBuilder = Json.createObjectBuilder();
+            stubBuilder.add("request", Json.createObjectBuilder()
+                    .add("method", method)
+                    .add("url", path)
+                    .add("bodyPatterns", bodyPatterns));
+            stubBuilder.add("response", responseBuilder);
+
+            stubs.add(stubBuilder);
+        }
+
+        // Write the output to a JSON file
+        try (JsonWriter jsonWriter = Json.createWriter(new FileWriter("wiremock-stus.json"))) {
+            JsonArrayBuilder arrayBuilder = Json.createArrayBuilder();
+            for (JsonObjectBuilder stub : stubs) {
+                arrayBuilder.add(stub.build());
+            }
+            jsonWriter.writeArray(arrayBuilder.build());
         }
     }
-}
+
+    private static String getRequestBody(Element transaction) {
+        return transaction.getElementsByTagName("request").item(0).getChildNodes().item(1).getTextContent();
+    }
+
+    private static String getResponseBody(Element transaction) {
+        return transaction.getElementsByTagName("response").item(0).getChildNodes().item(3).getTextContent();
+    }
+
+    private static JsonObjectBuilder extractBodyFromResponse(String responseBody) {
+        JsonObjectBuilder responseBuilder = Json.createObjectBuilder();
+
+        try {
+            // Parse the response body as JSON directly
+            JsonReader reader = Json.createReader(new StringReader(responseBody.trim()));
+            JsonValue jsonValue = reader.read(); // Read the top-level JSON value
+
+            if (jsonValue.getValueType() == JsonValue.ValueType.ARRAY) {
+                JsonArray responseArray = (JsonArray) jsonValue;
+
+                // Assuming the relevant data is in the first element of the array
+                if (!responseArray.isEmpty()) {
+                    JsonObject responseJson = responseArray.getJsonObject(0);
+                    addJsonObjectFieldsToBuilder(responseJson, responseBuilder);
+                }
+            } else if (jsonValue.getValueType() == JsonValue.ValueType.OBJECT) {
+                // If the response body is an object, handle it directly
+                JsonObject responseJson = (JsonObject) jsonValue;
+                addJsonObjectFieldsToBuilder(responseJson, responseBuilder);
+            }
+
+        } catch (Exception e) {
+            // Handle parsing errors
+            e.printStackTrace();
+        }
+
+        return responseBuilder;
+    }
+
+    // Helper method to add all fields of a JsonObject to a JsonObjectBuilder
+    private static void addJsonObjectFieldsToBuilder(JsonObject jsonObject, JsonObjectBuilder jsonObjectBuilder) {
+        for (String key : jsonObject.keySet()) {
+            jsonObjectBuilder.add(key, jsonObject.get(key));
+        }
+    }
+
+    private static JsonObjectBuilder createJsonPathObject (String jsonPath){
+                return Json.createObjectBuilder().add("matchesJsonPath", jsonPath);
+            }
+        }
